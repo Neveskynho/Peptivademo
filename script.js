@@ -1298,6 +1298,104 @@ window.CATALOG_DATA = {
 };
 
 /* ============================================================
+   Peptiva Importados — rastreamento de ads
+   Meta Pixel + UTMify + captura de UTMs/fbclid
+   ============================================================ */
+
+/* >>> CONFIGURE AQUI -----------------------------------------------
+   1) META_PIXEL_ID  : Gerenciador de Eventos > Fontes de dados > ID do pixel
+   2) UTMIFY_PIXEL_ID: Painel UTMify > Integracoes > Pixel UTMify > ID
+   Deixe "" para manter aquele rastreador desativado. */
+const META_PIXEL_ID = "4533423373645682";
+const UTMIFY_PIXEL_ID = "6a710e1dd4f4297bea9a2e71";
+/* ------------------------------------------------------------------ */
+
+(function () {
+  /* ---------- captura e persistência de UTMs / click ids ---------- */
+  var KEY = "nova-track-v1";
+  var FIELDS = [
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_term",
+    "utm_content",
+    "fbclid",
+    "gclid",
+  ];
+
+  var params = new URLSearchParams(location.search);
+  var touch = {};
+  var has = false;
+  for (var i = 0; i < FIELDS.length; i++) {
+    var v = params.get(FIELDS[i]);
+    if (v) {
+      touch[FIELDS[i]] = v;
+      has = true;
+    }
+  }
+
+  var saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+  } catch (e) {}
+
+  if (has) {
+    touch.ts = new Date().toISOString();
+    saved.last = touch; /* último toque vence na atribuição */
+    if (!saved.first) saved.first = touch;
+    try {
+      localStorage.setItem(KEY, JSON.stringify(saved));
+    } catch (e) {}
+  }
+
+  /* usado pelo app.js para carimbar a origem no pedido do WhatsApp */
+  window.npGetTracking = function () {
+    return saved.last || saved.first || null;
+  };
+
+  /* ---------- Meta Pixel (base) ---------- */
+  if (META_PIXEL_ID) {
+    !(function (f, b, e, v, n, t, s) {
+      if (f.fbq) return;
+      n = f.fbq = function () {
+        n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments);
+      };
+      if (!f._fbq) f._fbq = n;
+      n.push = n;
+      n.loaded = !0;
+      n.version = "2.0";
+      n.queue = [];
+      t = b.createElement(e);
+      t.async = !0;
+      t.src = v;
+      s = b.getElementsByTagName(e)[0];
+      s.parentNode.insertBefore(t, s);
+    })(window, document, "script", "https://connect.facebook.net/en_US/fbevents.js");
+    window.fbq("init", META_PIXEL_ID);
+    window.fbq("track", "PageView");
+  }
+
+  /* ---------- Pixel UTMify ---------- */
+  if (UTMIFY_PIXEL_ID) {
+    window.pixelId = UTMIFY_PIXEL_ID;
+    var s = document.createElement("script");
+    s.setAttribute("async", "");
+    s.setAttribute("defer", "");
+    s.setAttribute("src", "https://cdn.utmify.com.br/scripts/pixel/pixel.js");
+    document.head.appendChild(s);
+  }
+
+  /* ---------- disparo seguro de eventos (no-op se pixel desligado) ---------- */
+  window.npTrack = function (eventName, data, isCustom) {
+    try {
+      if (window.fbq) {
+        window.fbq(isCustom ? "trackCustom" : "track", eventName, data || {});
+      }
+    } catch (e) {}
+  };
+})();
+
+/* ============================================================
    Peptiva Importados — catálogo + pedido via WhatsApp
    ============================================================ */
 
@@ -1313,7 +1411,7 @@ const state = {
 };
 
 /* carrinho: { [productId]: quantidade } — persiste no navegador */
-const CART_KEY = "peptiva-cart-v1";
+const CART_KEY = "nova-cart-v1";
 const productById = new Map(data.products.map((p) => [String(p.id), p]));
 
 const loadCart = () => {
@@ -1480,4 +1578,218 @@ const refreshCardAction = (id) => {
 
 /* ---------------- carrinho ---------------- */
 const cartCount = () => Object.values(cart).reduce((s, q) => s + q, 0);
-const cartSum
+const cartSum = () =>
+  Object.entries(cart).reduce((s, [id, qty]) => s + (productById.get(id)?.price || 0) * qty, 0);
+
+const renderCartBadge = () => {
+  const count = cartCount();
+  cartBadge.hidden = count === 0;
+  cartBadge.textContent = count > 99 ? "99+" : String(count);
+};
+
+const renderCart = () => {
+  const entries = Object.entries(cart);
+  cartDrawer.classList.toggle("is-empty", entries.length === 0);
+  cartFoot.hidden = entries.length === 0;
+
+  cartItems.innerHTML = entries
+    .map(([id, qty]) => {
+      const product = productById.get(id);
+      if (!product) return "";
+      return `
+        <div class="cart-item" data-id="${escapeHtml(id)}">
+          <div class="cart-item-media">
+            <img src="${product.image}" alt="${escapeHtml(product.name)}" loading="lazy" />
+          </div>
+          <div class="cart-item-info">
+            <h4>${escapeHtml(product.name.trim())}</h4>
+            <span class="unit">${formatter.format(product.price)} un.</span>
+          </div>
+          <div class="cart-item-side">
+            <div class="qty-stepper">
+              <button type="button" data-dec="${escapeHtml(id)}" aria-label="Diminuir">&minus;</button>
+              <span class="qty-value">${qty}</span>
+              <button type="button" data-inc="${escapeHtml(id)}" aria-label="Aumentar">+</button>
+            </div>
+            <span class="cart-item-subtotal">${formatter.format(product.price * qty)}</span>
+            <button class="cart-item-remove" type="button" data-remove="${escapeHtml(id)}">remover</button>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  cartTotal.textContent = formatter.format(cartSum());
+  renderCartBadge();
+};
+
+const setQty = (id, qty) => {
+  if (qty <= 0) delete cart[id];
+  else cart[id] = Math.min(qty, 99);
+  saveCart();
+  renderCart();
+  refreshCardAction(id);
+};
+
+const openCart = () => {
+  cartOverlay.hidden = false;
+  requestAnimationFrame(() => {
+    cartOverlay.classList.add("is-open");
+    cartDrawer.classList.add("is-open");
+  });
+  cartDrawer.setAttribute("aria-hidden", "false");
+  document.body.style.overflow = "hidden";
+  if (cartCount() > 0) {
+    window.npTrack?.("InitiateCheckout", {
+      value: cartSum(),
+      currency: "BRL",
+      num_items: cartCount(),
+      content_type: "product",
+      content_ids: Object.keys(cart),
+    });
+  }
+};
+
+const closeCart = () => {
+  cartOverlay.classList.remove("is-open");
+  cartDrawer.classList.remove("is-open");
+  cartDrawer.setAttribute("aria-hidden", "true");
+  document.body.style.overflow = "";
+  setTimeout(() => {
+    if (!cartDrawer.classList.contains("is-open")) cartOverlay.hidden = true;
+  }, 260);
+};
+
+/* ---------------- pedido no WhatsApp ---------------- */
+const buildWhatsAppMessage = () => {
+  const lines = ["*Pedido — Peptiva Importados*", ""];
+  for (const [id, qty] of Object.entries(cart)) {
+    const product = productById.get(id);
+    if (!product) continue;
+    lines.push(`▪ ${qty}x ${product.name.trim()} — ${formatter.format(product.price * qty)}`);
+  }
+  lines.push("", `Total: *${formatter.format(cartSum())}*`);
+
+  /* carimbo de origem (ads): viaja com o pedido até o atendimento,
+     que replica as UTMs no link de pagamento para fechar a atribuição */
+  const t = window.npGetTracking?.();
+  if (t) {
+    const origem = [t.utm_source, t.utm_campaign, t.utm_term, t.utm_content]
+      .filter(Boolean)
+      .join(" · ");
+    if (origem) lines.push("", `Origem: ${origem}`);
+    if (t.fbclid) lines.push(`Ref: ${t.fbclid}`);
+  }
+  return lines.join("\n");
+};
+
+const checkout = () => {
+  if (cartCount() === 0) return;
+  const payload = {
+    value: cartSum(),
+    currency: "BRL",
+    num_items: cartCount(),
+    content_type: "product",
+    content_ids: Object.keys(cart),
+  };
+  window.npTrack?.("Contact", payload);
+  window.npTrack?.("PedidoWhatsApp", payload, true);
+  const url = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(buildWhatsAppMessage())}`;
+  window.open(url, "_blank", "noopener");
+};
+
+/* ---------------- eventos ---------------- */
+categoryList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-category]");
+  if (!button) return;
+  state.category = button.dataset.category;
+  renderCategories();
+  renderProducts();
+});
+
+let searchTrackTimer;
+searchInput.addEventListener("input", (event) => {
+  state.search = event.target.value;
+  renderProducts();
+  clearTimeout(searchTrackTimer);
+  const query = event.target.value.trim();
+  if (query.length >= 3) {
+    searchTrackTimer = setTimeout(
+      () => window.npTrack?.("Search", { search_string: query }),
+      900
+    );
+  }
+});
+
+sortSelect.addEventListener("change", (event) => {
+  state.sort = event.target.value;
+  renderProducts();
+});
+
+/* + / − / adicionar / remover — tanto nos cards quanto no drawer */
+document.addEventListener("click", (event) => {
+  const add = event.target.closest("[data-add]");
+  if (add) {
+    const product = productById.get(add.dataset.add);
+    if (product) {
+      window.npTrack?.("AddToCart", {
+        content_type: "product",
+        content_ids: [String(product.id)],
+        content_name: product.name.trim(),
+        value: product.price,
+        currency: "BRL",
+      });
+    }
+    return setQty(add.dataset.add, 1);
+  }
+  const inc = event.target.closest("[data-inc]");
+  if (inc) return setQty(inc.dataset.inc, (cart[inc.dataset.inc] || 0) + 1);
+  const dec = event.target.closest("[data-dec]");
+  if (dec) return setQty(dec.dataset.dec, (cart[dec.dataset.dec] || 0) - 1);
+  const remove = event.target.closest("[data-remove]");
+  if (remove) return setQty(remove.dataset.remove, 0);
+});
+
+cartButton.addEventListener("click", openCart);
+cartClose.addEventListener("click", closeCart);
+cartOverlay.addEventListener("click", closeCart);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeCart();
+});
+
+cartClear.addEventListener("click", () => {
+  for (const id of Object.keys(cart)) delete cart[id];
+  saveCart();
+  renderCart();
+  renderProducts();
+});
+
+checkoutBtn.addEventListener("click", checkout);
+
+/* ---------------- tema claro/escuro ---------------- */
+const THEME_KEY = "nova-theme";
+
+/* claro é o padrão da marca; o toggle liga o escuro */
+const syncThemeToggle = () => {
+  themeToggle.setAttribute(
+    "aria-checked",
+    String(document.documentElement.dataset.theme === "dark")
+  );
+};
+
+themeToggle.addEventListener("click", () => {
+  const root = document.documentElement;
+  const paraEscuro = root.dataset.theme !== "dark";
+  if (paraEscuro) root.dataset.theme = "dark";
+  else delete root.dataset.theme;
+  try {
+    localStorage.setItem(THEME_KEY, paraEscuro ? "dark" : "light");
+  } catch {}
+  syncThemeToggle();
+});
+
+/* ---------------- init ---------------- */
+renderCategories();
+renderProducts();
+renderCart();
+syncThemeToggle();
